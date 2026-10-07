@@ -1,0 +1,7 @@
+.vscode
+__pycache__
+.ipynb_checkpoints
+cifar-10-batches-py
+eecs598
+*.tar.gz
+*.zip
