@@ -136,6 +136,7 @@ colormap.append(([9, 56, 108], 1.0))
 
 
 def colormap_to_weight(colormap, color):
+    color = color.astype(np.int32)
     closest_weight = -1
     closest_dist = 99999999
 

@@ -6,4 +6,6 @@ eecs598
 *.tar.gz
 *.zip
 DEBUG.md
+SKILL.md
 *.pt
+mnist_dataset
