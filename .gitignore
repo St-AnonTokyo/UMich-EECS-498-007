@@ -9,3 +9,4 @@ DEBUG.md
 SKILL.md
 *.pt
 mnist_dataset
+*.pth
