@@ -460,6 +460,9 @@ class DeepConvNet(object):
                 self.params[f'W{i+1}']=torch.randn(num_filters[i],last_fil,3,3,dtype=dtype,device=device)*weight_scale
             self.params[f'b{i+1}']=torch.zeros(num_filters[i],dtype=dtype,device=device)
             last_fil=num_filters[i]
+            if batchnorm:
+                self.params[f'gamma{i+1}']=torch.ones(num_filters[i],dtype=dtype,device=device)
+                self.params[f'beta{i+1}']=torch.zeros(num_filters[i],dtype=dtype,device=device)
         for i in range(len(max_pools)):
             H=H//2
             W=W//2
@@ -582,10 +585,18 @@ class DeepConvNet(object):
         for i in range(self.num_layers-1):
             W=self.params[f'W{i+1}']
             b=self.params[f'b{i+1}']
-            if i in self.max_pools:
-                out,c=CRP.forward(input,W,b,conv_param,pool_param)
+            if self.batchnorm:
+                gamma=self.params[f'gamma{i+1}']
+                beta=self.params[f'beta{i+1}']
+                if i in self.max_pools:
+                    out,c=Conv_BatchNorm_ReLU_Pool.forward(input,W,b,gamma,beta,conv_param,self.bn_params[i],pool_param)
+                else:
+                    out,c=Conv_BatchNorm_ReLU.forward(input,W,b,gamma,beta,conv_param,self.bn_params[i])
             else:
-                out,c=CR.forward(input,W,b,conv_param)
+                if i in self.max_pools:
+                    out,c=CRP.forward(input,W,b,conv_param,pool_param)
+                else:
+                    out,c=CR.forward(input,W,b,conv_param)
             input=out
             cache.append(c)
         W=self.params[f'W{self.num_layers}']
@@ -621,10 +632,16 @@ class DeepConvNet(object):
         last_grad=grad_linear
         for i in range(self.num_layers-2,-1,-1):
             c=cache[i]
-            if i in self.max_pools:
-                last_grad,grads[f'W{i+1}'],grads[f'b{i+1}']=CRP.backward(last_grad,c)
+            if self.batchnorm:
+                if i in self.max_pools:
+                    last_grad,grads[f'W{i+1}'],grads[f'b{i+1}'],grads[f'gamma{i+1}'],grads[f'beta{i+1}']=Conv_BatchNorm_ReLU_Pool.backward(last_grad,c)
+                else:
+                    last_grad,grads[f'W{i+1}'],grads[f'b{i+1}'],grads[f'gamma{i+1}'],grads[f'beta{i+1}']=Conv_BatchNorm_ReLU.backward(last_grad,c)                
             else:
-                last_grad,grads[f'W{i+1}'],grads[f'b{i+1}']=CR.backward(last_grad,c)
+                if i in self.max_pools:
+                    last_grad,grads[f'W{i+1}'],grads[f'b{i+1}']=CRP.backward(last_grad,c)
+                else:
+                    last_grad,grads[f'W{i+1}'],grads[f'b{i+1}']=CR.backward(last_grad,c)
             grads[f'W{i+1}']+=2*self.reg*self.params[f'W{i+1}']
         #############################################################
         #                       END OF YOUR CODE                    #
@@ -831,7 +848,13 @@ class BatchNorm(object):
             # (https://arxiv.org/abs/1502.03167) might prove to be helpful.  #
             ##################################################################
             # Replace "pass" statement with your code
-            pass
+            sample_mean=torch.mean(x,dim=0,dtype=x.dtype)
+            sample_var=torch.var(x,dim=0,correction=0)
+            x_norm=(x-sample_mean) / (sample_var+eps)**0.5
+            out=x_norm*gamma+beta
+            running_mean=momentum*running_mean+(1-momentum)*sample_mean
+            running_var=momentum*running_var+(1-momentum)*sample_var
+            cache=(x,x_norm,gamma,beta,eps,sample_mean,sample_var)
             ################################################################
             #                           END OF YOUR CODE                   #
             ################################################################
@@ -844,7 +867,8 @@ class BatchNorm(object):
             # in the out variable.                                         #
             ################################################################
             # Replace "pass" statement with your code
-            pass
+            x_norm=(x-running_mean) / (running_var+eps)**0.5
+            out=x_norm*gamma+beta
             ################################################################
             #                      END OF YOUR CODE                        #
             ################################################################
@@ -886,7 +910,14 @@ class BatchNorm(object):
         # Don't forget to implement train and test mode separately.         #
         #####################################################################
         # Replace "pass" statement with your code
-        pass
+        x,x_norm,gamma,beta,eps,sample_mean,sample_var=cache
+        m=x.shape[0]
+        dx_norm=dout*gamma
+        dvar=(dx_norm*(x-sample_mean)).sum(dim=0)*(-0.5)*((sample_var+eps)**(-1.5))
+        dmean=dx_norm.sum(dim=0)*(-1/((sample_var+eps)**0.5))-dvar*(x-sample_mean).sum(dim=0)*2/m
+        dx=dx_norm/((sample_var+eps)**0.5)+dvar*(2/m)*(x-sample_mean)+dmean/m
+        dgamma=(dout*x_norm).sum(dim=0)
+        dbeta=dout.sum(dim=0)
         #################################################################
         #                      END OF YOUR CODE                         #
         #################################################################
@@ -919,7 +950,12 @@ class BatchNorm(object):
         # single 80-character line.                                       #
         ###################################################################
         # Replace "pass" statement with your code
-        pass
+        x,x_norm,gamma,beta,eps,mean,var=cache
+        m=x.shape[0]
+        dgamma=(dout*x_norm).sum(dim=0)
+        dbeta=dout.sum(dim=0)
+        dx=dout-(1/m)*dbeta-x_norm*dgamma/m
+        dx*=gamma/((var+eps)**0.5)
         #################################################################
         #                        END OF YOUR CODE                       #
         #################################################################
@@ -967,7 +1003,11 @@ class SpatialBatchNorm(object):
         # ours is less than five lines.                                #
         ################################################################
         # Replace "pass" statement with your code
-        pass
+        N=x.shape[0]
+        C=x.shape[1]
+        H=x.shape[2]
+        out,cache=BatchNorm.forward(x.transpose(0,1).reshape(C,-1).t(),gamma,beta,bn_param)
+        out=out.t().reshape(C,N,H,-1).transpose(0,1)
         ################################################################
         #                       END OF YOUR CODE                       #
         ################################################################
@@ -998,7 +1038,11 @@ class SpatialBatchNorm(object):
         # ours is less than five lines.                                 #
         #################################################################
         # Replace "pass" statement with your code
-        pass
+        N=dout.shape[0]
+        C=dout.shape[1]
+        H=dout.shape[2]
+        dx_combine,dgamma,dbeta=BatchNorm.backward_alt(dout.transpose(0,1).reshape(C,-1).t(),cache)
+        dx=dx_combine.t().reshape(C,N,H,-1).transpose(0,1)
         ##################################################################
         #                       END OF YOUR CODE                         #
         ##################################################################
